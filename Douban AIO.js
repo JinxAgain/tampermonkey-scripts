@@ -24,7 +24,7 @@
 // @include        http://www.x5v.net/*
 // @resource top250_css https://img1.doubanio.com/f/movie/5986ab7176af54744e71209c6afb5e1d8d1191cf/dist/movie/charts/top250.css
 // @license        Zlib/Libpng License
-// @version        0.1.0
+// @version        0.1.1
 // @icon           https://img3.doubanio.com/favicon.ico
 // @run-at         document-end
 // @namespace      doveboy_js
@@ -761,27 +761,35 @@ $(document).ready(function () {
             $("div#interest_sectl").append(`<div class='rating_wrap clearbox' id='loading_more_rate'>加载第三方评价信息中.......</div>
 <div class="rating_wrap clearbox rating_imdb" style="display:none"></div>
 <div class="rating_wrap clearbox rating_meta" style="display:none"></div>
+<div class="rating_wrap clearbox rating_letd" style="display:none"></div>
 <div class="rating_wrap clearbox rating_rott" style="display:none"></div>
-<div class="rating_wrap clearbox rating_anidb" style="border-top: 1px solid #eaeaea; display:none"></div>
-<div class="rating_more" style="display:none"></div>`); // 修复部分情况$("div.rating_betterthan")不存在情况
+<div class="rating_wrap clearbox rating_anidb" style="border-top: 1px solid #eaeaea; display:none"></div>`); // 修复部分情况$("div.rating_betterthan")不存在情况
 
             // 安全机制：10秒后自动隐藏加载提示，防止请求超时导致一直显示
             setTimeout(() => { $("#loading_more_rate").hide(); }, 10000);
 
-            // put on more ratings
-            let rating_more_data = [ /** {name, link || `${imdb_link}`, text} */];
+            let $last_extra_info_node = null;
+            let added_extra_names = new Set();
 
             function update_rating_more(data) {
-                rating_more_data.push(data);
+                let name = data.name;
+                if (added_extra_names.has(name)) return;
+                added_extra_names.add(name);
 
-                let rating_more = $('#interest_sectl .rating_more');
-                let rating_more_html = '';
-                for (let i = 0; i < rating_more_data.length; i++) {
-                    let rating_data = rating_more_data[i];
-                    rating_more_html += `<div>${rating_data['name']} <a href='${rating_data['link'] || imdb_link}' style="${rating_data['name'].length <= 4 ? 'margin-left:-20px' : ''} " target="_blank" title="${rating_data['data']}">${rating_data['data']}</a></div>`;
+                let data_str = data.data;
+                let link = data.link || imdb_link || "#";
+
+                let $new_node = $(`<span class="pl">${name}:</span> <a href="${link}" target="_blank" rel="nofollow">${data_str}</a><br/>`);
+                
+                if ($last_extra_info_node) {
+                    $new_node.insertAfter($last_extra_info_node);
+                    // 关键：必须只让最后落地的 br 节点作为后续插入的锚点，否则 insertAfter 会在集合中的每个节点后都插一遍
+                    $last_extra_info_node = $new_node.last();
+                } else {
+                    $('#info').append($new_node);
+                    $last_extra_info_node = $new_node.last();
                 }
-                rating_more.html(rating_more_html);
-                rating_more.show();
+                
                 $("#loading_more_rate").hide();
             }
 
@@ -814,10 +822,157 @@ $(document).ready(function () {
                     }
                 }
 
+                let mdblist_data = null;
+                let mdblist_ratings = {};
+                let enable_mdblist_api = GM_getValue('enable_mdblist_api', false);
+                let apikey_mdblist = GM_getValue('apikey_mdblist', '');
+                if (enable_mdblist_api && apikey_mdblist) {
+                    try {
+                        let m_type = is_series ? 'show' : 'movie';
+                        let mdblist_res = await new Promise((resolve, reject) => {
+                            GM_xmlhttpRequest({
+                                method: 'GET',
+                                url: `https://api.mdblist.com/imdb/${m_type}/${imdb_id}?apikey=${apikey_mdblist}`,
+                                timeout: 10000,
+                                onload: resolve,
+                                onerror: reject,
+                                ontimeout: reject
+                            });
+                        });
+                        mdblist_data = JSON.parse(mdblist_res.responseText);
+                        if (mdblist_data && mdblist_data.ratings) {
+                            mdblist_data.ratings.forEach(r => mdblist_ratings[r.source] = r);
+                        }
+                    } catch (e) {
+                        console.error("MdbList API 获取失败", e);
+                    }
+                }
+
                 imdb_link = `https://www.imdb.com/title/${imdb_id}/`
 
                 // 把豆瓣删除的超链接给加回去，并增加 Simkl 链接
-                $(imdb_anchor[0].nextSibling).replaceWith(`&nbsp;<a href="${imdb_link}" target="_blank">${imdb_id}</a> &nbsp;<a href="https://api.simkl.com/redirect?to=Simkl&imdb=${imdb_id}" target="_blank" title="Simkl" style="vertical-align: middle; display: inline-flex;"><img src="https://simkl.com/favicon.ico" style="width: 14px; height: 14px;"></a>`);
+                let $imdb_link_node = $(`<span>&nbsp;<a href="${imdb_link}" target="_blank">${imdb_id}</a> &nbsp;<a href="https://api.simkl.com/redirect?to=Simkl&imdb=${imdb_id}" target="_blank" title="Simkl" style="vertical-align: middle; display: inline-flex;"><img src="https://simkl.com/favicon.ico" style="width: 14px; height: 14px;"></a></span>`);
+                let $imdb_br = $(`<br/>`);
+
+                // 移除原有的 IMDb 编号后的换行符（如果存在），防止空行重复
+                let $orig_node = $(imdb_anchor[0].nextSibling);
+                let $orig_next = $orig_node.next();
+                if ($orig_next.is('br')) {
+                    $orig_next.remove();
+                }
+
+                $orig_node.replaceWith($imdb_link_node);
+                $imdb_br.insertAfter($imdb_link_node);
+                $last_extra_info_node = $imdb_br;
+
+                if (mdblist_data) {
+                    if (mdblist_data.budget) {
+                        update_rating_more({
+                            name: '总成本',
+                            link: imdb_link,
+                            data: '$' + parseInt(mdblist_data.budget).toLocaleString('en-US')
+                        });
+                    }
+                    if (mdblist_data.revenue) {
+                        update_rating_more({
+                            name: '总票房',
+                            link: imdb_link,
+                            data: '$' + parseInt(mdblist_data.revenue).toLocaleString('en-US')
+                        });
+                    }
+                    if (mdblist_data.certification) {
+                        const contentRatingMap = {
+                            'G': '大众级 | 全年龄',
+                            'PG': '指导级 | ≥6岁',
+                            'PG-13': '特指级 | ≥13岁',
+                            'NC-17': '限定级 | ≥17岁',
+                            'R': '限制级 | ≥18岁',
+                            'TV-MA': 'TV-MA | ≥17岁',
+                            'TV-14': 'TV-14 | ≥14岁',
+                            'TV-PG': 'TV-PG | ≥8岁',
+                            'TV-G': 'TV-G | 全年龄',
+                            'TV-Y7': 'TV-Y7 | ≥7岁',
+                            'TV-Y': 'TV-Y | 全年龄',
+                            'Not Rated': '未分级'
+                        };
+                        update_rating_more({
+                            name: '分级',
+                            link: imdb_link + 'parentalguide#certification',
+                            data: contentRatingMap[mdblist_data.certification] || mdblist_data.certification
+                        });
+                    }
+                }
+
+                if (mdblist_ratings.imdb) {
+                    imdb_average_rating = mdblist_ratings.imdb.value;
+                    imdb_votes = mdblist_ratings.imdb.votes;
+                    imdb_rating = imdb_votes ? imdb_average_rating + '/10 from ' + imdb_votes + ' users' : '';
+                    $('#interest_sectl div.rating_imdb').html(starBlock("IMDB", mdblist_ratings.imdb.url ? `https://www.imdb.com/title/${imdb_id}/` : imdb_link + 'ratings?ref_=tt_ov_rt', imdb_average_rating, imdb_votes)).show();
+                }
+
+                if (mdblist_ratings.metacritic && GM_getValue("enable_metacritic_rate", true)) {
+                    let r_meta = mdblist_ratings.metacritic;
+                    let metascore = r_meta.score;
+                    let reviewCount = r_meta.votes || 0;
+                    let metaDesc = metascore >= 61 ? "Generally Favorable" : (metascore >= 40 ? "Mixed or Average" : "Unfavorable");
+                    let mColor = metascore >= 61 ? '#00ce7a' : (metascore >= 40 ? '#ffbd3f' : '#ff0000');
+                    
+                    let mc_url_path = r_meta.url;
+                    if (mc_url_path && !mc_url_path.startsWith('/movie') && !mc_url_path.startsWith('/tv')) {
+                        mc_url_path = (is_series ? '/tv' : '/movie') + (mc_url_path.startsWith('/') ? '' : '/') + mc_url_path;
+                    }
+                    let critic_link = mc_url_path ? `https://www.metacritic.com${mc_url_path}` : imdb_link + 'criticreviews/';
+                    
+                    $('#interest_sectl div.rating_meta').html(`
+                        <span class="rating_logo ll" style="color:#666; font-size:12px; text-transform:uppercase; letter-spacing:1px;">Metascore</span><br>
+                        <div id="metaValue" class="rating_self clearfix" style="display:flex; align-items:center; margin-top:8px;">
+                            <div class="ll">
+                                <a href="${critic_link}" target="_blank" style="text-decoration:none; display:flex; align-items:center; justify-content:center; width:48px; height:48px; background:${mColor}; border-radius:6px; transition: opacity 0.2s;">
+                                    <strong style="color:#fff; font-size:22px; font-weight:700; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">${metascore}</strong>
+                                </a>
+                            </div>
+                            <div style="line-height: 1.4; margin-left:12px; display:flex; flex-direction:column; justify-content:center;">
+                                <div style="font-size:14px; color:#111; font-weight:700;">${metaDesc}</div>
+                                <div style="font-size:12px; color:#666;">Based on ${reviewCount} Critic Reviews</div>
+                            </div>
+                        </div>
+                    `).show();
+                }
+
+                if (mdblist_ratings.letterboxd && GM_getValue("enable_letterboxd_rate", true)) {
+                    let r_letbd = mdblist_ratings.letterboxd;
+                    let letbd_link = r_letbd.url ? `https://letterboxd.com${r_letbd.url}` : `https://letterboxd.com/search/${encodeURIComponent(this_title || chinese_title)}`;
+                    $('#interest_sectl div.rating_letd').html(`
+                        <span class="rating_logo ll" style="color:#666; font-size:12px; text-transform:uppercase; letter-spacing:1px;">Letterboxd</span><br>
+                        <div class="rating_self clearfix" style="display:flex; align-items:center; margin-top:8px;">
+                            <div class="ll">
+                                <a href="${letbd_link}" target="_blank" style="text-decoration:none; display:flex; align-items:center; justify-content:center; width:48px; height:48px; background:#14181c; border-radius:6px; transition: opacity 0.2s;">
+                                    <strong style="color:#00e054; font-size:22px; font-weight:700; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">${r_letbd.value}</strong>
+                                </a>
+                            </div>
+                            <div style="line-height: 1.4; margin-left:12px; display:flex; flex-direction:column; justify-content:center;">
+                                <div style="font-size:14px; color:#111; font-weight:700;">out of 5</div>
+                                <div style="font-size:12px; color:#666;">${r_letbd.votes} 人评价</div>
+                            </div>
+                        </div>
+                    `).show();
+                }
+
+                if (mdblist_ratings.tomatoes && GM_getValue("enable_tomato_rate", true)) {
+                    let r_rt = mdblist_ratings.tomatoes;
+                    let rtURL = r_rt.url ? `https://www.rottentomatoes.com${r_rt.url}` : `https://www.rottentomatoes.com/search/?search=${encodeURIComponent(ywm.trim())}`;
+                    let rating_rott_value = r_rt.score;
+                    let fresh_rott_value = Math.round(r_rt.votes * (rating_rott_value / 100)) || 0;
+                    let rotten_rott_value = r_rt.votes - fresh_rott_value;
+                    
+                    $('#interest_sectl div.rating_rott').html(`
+                        <span class="rating_logo ll">烂番茄评分</span><br>
+                        <div id="rottValue" class="rating_self clearfix">
+                            <strong class="ll rating_num"><a target="_blank" href="${rtURL}">${rating_rott_value}%</a></strong>
+                            <div class="rating_right" style="line-height: 16px;"><span>鲜:&nbsp;&nbsp;${fresh_rott_value}</span><br><span>烂:&nbsp;&nbsp;${rotten_rott_value}</span></div>
+                        </div>
+                    `).show();
+                }
 
                 getDoc(imdb_link, null, function (doc) {
                     // 判断是不是新版界面
@@ -828,30 +983,40 @@ $(document).ready(function () {
                     try {
                         // IMDb 评分 （评分信息直接从 ld_json 中获取算了）
                         ld_json_imdb = parseLdJson($('head > script[type="application/ld+json"]', doc).text());
-                        imdb_average_rating = ld_json_imdb["aggregateRating"]["ratingValue"];
-                        imdb_votes = ld_json_imdb["aggregateRating"]["ratingCount"];
-                        imdb_rating = imdb_votes ? imdb_average_rating + '/10 from ' + imdb_votes + ' users' : ''; // MovieinfoGen 相关
-                        $('#interest_sectl div.rating_imdb').html(starBlock("IMDB", imdb_link + 'ratings?ref_=tt_ov_rt', imdb_average_rating, imdb_votes)).show();
+                        if (!mdblist_ratings.imdb) {
+                            imdb_average_rating = ld_json_imdb["aggregateRating"]["ratingValue"];
+                            imdb_votes = ld_json_imdb["aggregateRating"]["ratingCount"];
+                            imdb_rating = imdb_votes ? imdb_average_rating + '/10 from ' + imdb_votes + ' users' : ''; // MovieinfoGen 相关
+                            $('#interest_sectl div.rating_imdb').html(starBlock("IMDB", imdb_link + 'ratings?ref_=tt_ov_rt', imdb_average_rating, imdb_votes)).show();
+                        }
 
-                        // 分级信息 可以从 ld_json 中获取
-                        if (ld_json_imdb['contentRating']) {
-                            const contentRatingMap = {
-                                'G': '大众级 | 全年龄',
-                                'PG': '指导级 | ≥6岁',
-                                'PG-13': '特指级 | ≥13岁',
-                                'NC-17': '限定级 | ≥17岁',
-                                'R': '限制级 | ≥18岁',
-                                'Not Rated': '未分级'
-                            };
-                            update_rating_more({
-                                name: '分级', // MPAA
-                                link: imdb_link + 'parentalguide#certification',
-                                data: contentRatingMap[ld_json_imdb['contentRating']] || ld_json_imdb['contentRating']
-                            });
+                        // 分级信息 Fallback
+                        if (!mdblist_data || !mdblist_data.certification) {
+                            if (ld_json_imdb && ld_json_imdb['contentRating']) {
+                                const contentRatingMap = {
+                                    'G': '大众级 | 全年龄',
+                                    'PG': '指导级 | ≥6岁',
+                                    'PG-13': '特指级 | ≥13岁',
+                                    'NC-17': '限定级 | ≥17岁',
+                                    'R': '限制级 | ≥18岁',
+                                    'TV-MA': 'TV-MA | ≥17岁',
+                                    'TV-14': 'TV-14 | ≥14岁',
+                                    'TV-PG': 'TV-PG | ≥8岁',
+                                    'TV-G': 'TV-G | 全年龄',
+                                    'TV-Y7': 'TV-Y7 | ≥7岁',
+                                    'TV-Y': 'TV-Y | 全年龄',
+                                    'Not Rated': '未分级'
+                                };
+                                update_rating_more({
+                                    name: '分级', // MPAA
+                                    link: imdb_link + 'parentalguide#certification',
+                                    data: contentRatingMap[ld_json_imdb['contentRating']] || ld_json_imdb['contentRating']
+                                });
+                            }
                         }
 
                         // Metascore & Critic Reviews
-                        if (GM_getValue("enable_metacritic_rate", true)) {
+                        if (!mdblist_ratings.metacritic && GM_getValue("enable_metacritic_rate", true)) {
                             let critic_link = imdb_link + 'criticreviews/';
                             getDoc(critic_link, null, function (critdoc) {
                                 if (!critdoc) {
@@ -928,29 +1093,31 @@ $(document).ready(function () {
                         // 从网页中获取的部分信息，要区分是否新版页面
                         if (GM_getValue("enable_imdb_ext_info", true)) {
                             if (is_new) {
-                                if ($("li.ipc-metadata-list__item.fJEELB:contains('Budget')", doc).length > 0) {
-                                    update_rating_more({
-                                        name: '总成本',
-                                        data: $("li.ipc-metadata-list__item.fJEELB:contains('Budget')", doc).text().replace(/^Budget/, '').replace(/\(estimated\)/, '')
-                                    });
-                                }
-                                if ($("li.ipc-metadata-list__item.fJEELB:contains('Opening weekend US & Canada')", doc).length > 0) {
-                                    update_rating_more({
-                                        name: '美首周',
-                                        data: $("li.ipc-metadata-list__item.fJEELB:contains('Opening weekend US & Canada')", doc).text().replace(/^Opening weekend US & Canada/, '').replace(/[a-zA-Z]+ \d+, \d+$/, '')
-                                    });
-                                }
-                                if ($("li.ipc-metadata-list__item.fJEELB:contains('Gross US & Canada')", doc).length > 0) {
-                                    update_rating_more({
-                                        name: '美票房',
-                                        data: $("li.ipc-metadata-list__item.fJEELB:contains('Gross US & Canada')", doc).text().replace(/^Gross US & Canada/, '')
-                                    });
-                                }
-                                if ($("li.ipc-metadata-list__item.fJEELB:contains('Gross worldwide')", doc).length > 0) {
-                                    update_rating_more({
-                                        name: '总票房',
-                                        data: $("li.ipc-metadata-list__item.fJEELB:contains('Gross worldwide')", doc).text().replace(/^Gross worldwide/, '')
-                                    });
+                                if (!mdblist_data) {
+                                    if ($("li.ipc-metadata-list__item.fJEELB:contains('Budget')", doc).length > 0) {
+                                        update_rating_more({
+                                            name: '总成本',
+                                            data: $("li.ipc-metadata-list__item.fJEELB:contains('Budget')", doc).text().replace(/^Budget/, '').replace(/\(estimated\)/, '')
+                                        });
+                                    }
+                                    if ($("li.ipc-metadata-list__item.fJEELB:contains('Opening weekend US & Canada')", doc).length > 0) {
+                                        update_rating_more({
+                                            name: '美首周',
+                                            data: $("li.ipc-metadata-list__item.fJEELB:contains('Opening weekend US & Canada')", doc).text().replace(/^Opening weekend US & Canada/, '').replace(/[a-zA-Z]+ \d+, \d+$/, '')
+                                        });
+                                    }
+                                    if ($("li.ipc-metadata-list__item.fJEELB:contains('Gross US & Canada')", doc).length > 0) {
+                                        update_rating_more({
+                                            name: '美票房',
+                                            data: $("li.ipc-metadata-list__item.fJEELB:contains('Gross US & Canada')", doc).text().replace(/^Gross US & Canada/, '')
+                                        });
+                                    }
+                                    if ($("li.ipc-metadata-list__item.fJEELB:contains('Gross worldwide')", doc).length > 0) {
+                                        update_rating_more({
+                                            name: '总票房',
+                                            data: $("li.ipc-metadata-list__item.fJEELB:contains('Gross worldwide')", doc).text().replace(/^Gross worldwide/, '')
+                                        });
+                                    }
                                 }
                                 if ($("li.ipc-metadata-list__item:contains('Aspect ratio')", doc).length > 0) {
                                     update_rating_more({
@@ -959,35 +1126,37 @@ $(document).ready(function () {
                                     });
                                 }
                             } else { // 旧版代码
-                                if ($("div.txt-block:contains('Budget:')", doc).length > 0) {
-                                    update_rating_more({
-                                        name: '总成本',
-                                        data: $("div.txt-block:contains('Budget:')", doc).text().trim().replace(/\n/g, '').replace(/ .*$/, '').replace(/^Budget:/, '').replace(/CNY./, '¥').replace(/KRW./, '₩').replace(/JPY./, '円').replace(/HKD./, '港')
-                                    });
-                                }
-                                if ($("div.txt-block:contains('Opening Weekend:'):not(:contains('USA:'))", doc).text().length > 0) {
-                                    update_rating_more({
-                                        name: '本首周',
-                                        data: $("div.txt-block:contains('Opening Weekend:'):not(:contains('USA:'))", doc).text().trim().replace(/\n/g, '').replace(/^Opening Weekend:/, '').replace(/ \(.*$/, '').replace(/CNY./, '¥').replace(/KRW./, '₩').replace(/JPY./, '円').replace(/HKD./, '港')
-                                    });
-                                }
-                                if ($("div.txt-block:contains('Opening Weekend USA:')", doc).text().length > 0) {
-                                    update_rating_more({
-                                        name: '美首周',
-                                        data: $("div.txt-block:contains('Opening Weekend USA:')", doc).text().trim().replace(/\n/g, '').replace(/^Opening Weekend USA:/, '').replace(/,\d+ .*$/, '')
-                                    });
-                                }
-                                if ($("div.txt-block:contains('Gross USA:')", doc).text().length > 0) {
-                                    update_rating_more({
-                                        name: '美票房',
-                                        data: $("div.txt-block:contains('Gross USA:')", doc).text().trim().replace(/\n/g, '').replace(/^Gross USA:/, '').replace(/\, \d+ .*$/, '')
-                                    });
-                                }
-                                if ($("div.txt-block:contains('Cumulative Worldwide Gross:')", doc).text().length > 0) {
-                                    update_rating_more({
-                                        name: '总票房',
-                                        data: $("div.txt-block:contains('Cumulative Worldwide Gross:')", doc).text().trim().replace(/\n/g, '').replace(/^Cumulative Worldwide Gross:/, '').replace(/\, \d+ .*$/, '')
-                                    });
+                                if (!mdblist_data) {
+                                    if ($("div.txt-block:contains('Budget:')", doc).length > 0) {
+                                        update_rating_more({
+                                            name: '总成本',
+                                            data: $("div.txt-block:contains('Budget:')", doc).text().trim().replace(/\n/g, '').replace(/ .*$/, '').replace(/^Budget:/, '').replace(/CNY./, '¥').replace(/KRW./, '₩').replace(/JPY./, '円').replace(/HKD./, '港')
+                                        });
+                                    }
+                                    if ($("div.txt-block:contains('Opening Weekend:'):not(:contains('USA:'))", doc).text().length > 0) {
+                                        update_rating_more({
+                                            name: '本首周',
+                                            data: $("div.txt-block:contains('Opening Weekend:'):not(:contains('USA:'))", doc).text().trim().replace(/\n/g, '').replace(/^Opening Weekend:/, '').replace(/ \(.*$/, '').replace(/CNY./, '¥').replace(/KRW./, '₩').replace(/JPY./, '円').replace(/HKD./, '港')
+                                        });
+                                    }
+                                    if ($("div.txt-block:contains('Opening Weekend USA:')", doc).text().length > 0) {
+                                        update_rating_more({
+                                            name: '美首周',
+                                            data: $("div.txt-block:contains('Opening Weekend USA:')", doc).text().trim().replace(/\n/g, '').replace(/^Opening Weekend USA:/, '').replace(/,\d+ .*$/, '')
+                                        });
+                                    }
+                                    if ($("div.txt-block:contains('Gross USA:')", doc).text().length > 0) {
+                                        update_rating_more({
+                                            name: '美票房',
+                                            data: $("div.txt-block:contains('Gross USA:')", doc).text().trim().replace(/\n/g, '').replace(/^Gross USA:/, '').replace(/\, \d+ .*$/, '')
+                                        });
+                                    }
+                                    if ($("div.txt-block:contains('Cumulative Worldwide Gross:')", doc).text().length > 0) {
+                                        update_rating_more({
+                                            name: '总票房',
+                                            data: $("div.txt-block:contains('Cumulative Worldwide Gross:')", doc).text().trim().replace(/\n/g, '').replace(/^Cumulative Worldwide Gross:/, '').replace(/\, \d+ .*$/, '')
+                                        });
+                                    }
                                 }
                                 if ($("div.txt-block:contains('Aspect Ratio:')", doc).text().length > 0) {
                                     update_rating_more({
@@ -1003,9 +1172,9 @@ $(document).ready(function () {
                         $('#loading_more_rate').hide();
                     };
 
-                    if (GM_getValue("enable_tomato_rate", true)) { //烂番茄评分显示功能
+                    if (!mdblist_ratings.tomatoes && GM_getValue("enable_tomato_rate", true)) { //烂番茄评分显示功能
                         // add rottentomatoes block
-                        let movieTitle = ld_json_imdb['name'].trim();
+                        let movieTitle = ld_json_imdb['name'] ? ld_json_imdb['name'].trim() : (this_title || chinese_title);
                         let rottURL = 'https://www.rottentomatoes.com/m/' + movieTitle.replace(/[:\-!]/g, "").trim().replace(/\s+/g, "_").replace(/\W+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
                         getDoc(rottURL, null, function (rotdoc) {
                             $('#interest_sectl div.rating_rott').html(`<span class="rating_logo ll">烂番茄评分</span><br><div id="rottValue" class="rating_self clearfix"></div></div>`).show();
@@ -2401,12 +2570,15 @@ $(document).ready(function () {
             config_setting_gen("自动隐藏搜索失败站点", "enable_adv_auto_hide", "搜索时自动隐藏搜索失败（资源不存在,需要登陆,遇到问题）站点，默认关闭", false);
             config_setting_gen("搜索完成后隐藏提示条", "enalbe_adv_auto_tip_hide", "搜索结束后自动隐藏搜索情况提示条，默认关闭且不建议开启", false);
             config_setting_gen("展示IMDB增强信息", "enable_imdb_ext_info", "展示制片成本、本国首周票房、北美首周票房、总票房等来自IMDb的影片增强信息");
+            config_setting_gen("Metacritic评分", "enable_metacritic_rate", "展示Metacritic评分信息");
             config_setting_gen("烂番茄评分", "enable_tomato_rate", "展示烂番茄评分信息");
+            config_setting_gen("Letterboxd评分", "enable_letterboxd_rate", "展示Letterboxd评分信息（须依赖 Mdblist API）");
             config_setting_gen("动漫评分", "enable_anime_rate", "展示动漫影视的AniDB、Bgm、Mal等评分");
             config_setting_gen("蓝光发售日", "enable_blue_date", "展示蓝光的发售日期(来自IMDb)");
             config_setting_gen("亚马逊图书评分", "enable_book_amazon.cn_rate", `展示在<a href="https://www.amazon.cn/" target="_blank">亚马逊中国</a> 上有对应ISBN信息的图书评分信息`);
-            config_setting_gen("GoodReads图书评分", "enable_book_goodreads", `展示在 <a href="https://www.goodreads.com" target="_blank">GoodReads</a> 上有对应ISBN信息的图书评分信息，设置你的APIKEY: <input id='drdm_setting_apikey_goodreads' type='text' value='${GM_getValue('apikey_goodreads', '')}'></input> (<a href='//blog.rhilip.info/archives/1124/' target='_blank'>说明</a>)`, false);
-            config_setting_gen("修正剧集IMDb", "enable_omdb_api", `使用OMDb API获取正确的剧集IMDb编号，设置你的APIKEY: <input id='drdm_setting_apikey_omdb' type='text' value='${GM_getValue('apikey_omdb', '')}'></input> (<a href='https://www.omdbapi.com/apikey.aspx' target='_blank'>免费申请</a>)`, false);
+            config_setting_gen("GoodReads图书评分", "enable_book_goodreads", `展示在 <a href="https://www.goodreads.com" target="_blank">GoodReads</a> 上有对应ISBN信息的图书评分信息，设置APIKEY: <input id='drdm_setting_apikey_goodreads' type='text' value='${GM_getValue('apikey_goodreads', '')}'></input> (<a href='//blog.rhilip.info/archives/1124/' target='_blank'>说明</a>)`, false);
+            config_setting_gen("修正剧集IMDb", "enable_omdb_api", `使用OMDb API获取正确的剧集IMDb编号，设置APIKEY: <input id='drdm_setting_apikey_omdb' type='text' value='${GM_getValue('apikey_omdb', '')}'></input> (<a href='https://www.omdbapi.com/apikey.aspx' target='_blank'>免费申请</a>)`, false);
+            config_setting_gen("Mdblist API", "enable_mdblist_api", `使用Mdblist API获取IMDb, Metacritic, RT, Letterboxd等评分，设置APIKEY: <input id='drdm_setting_apikey_mdblist' type='text' value='${GM_getValue('apikey_mdblist', '')}'></input> (<a href='https://mdblist.com/' target='_blank'>获取</a>)`, false);
 
             config_setting += `</dl><br>`;
 
@@ -2442,6 +2614,10 @@ $(document).ready(function () {
             $('input#drdm_setting_apikey_omdb').on('input change', function () {
                 let that = $(this);
                 GM_setValue('apikey_omdb', that.val());
+            });
+            $('input#drdm_setting_apikey_mdblist').on('input change', function () {
+                let that = $(this);
+                GM_setValue('apikey_mdblist', that.val());
             });
         });
     });
