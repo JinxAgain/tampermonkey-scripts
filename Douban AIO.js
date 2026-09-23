@@ -10,6 +10,8 @@
 // @grant        GM_addStyle
 // @connect      *
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/JinxAgain/tampermonkey-scripts/main/Douban%20AIO.js
+// @downloadURL  https://raw.githubusercontent.com/JinxAgain/tampermonkey-scripts/main/Douban%20AIO.js
 // ==/UserScript==
 
 (function () {
