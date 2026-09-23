@@ -455,14 +455,12 @@
   /**
    * Render the 4 resource groups in Douban's sidebar
    */
-  function renderResourceGroups(ctx) {
-    const aside = document.querySelector('#content div.aside');
-    if (!aside) return;
+  function renderResourceGroups(ctx, aside) {
+    let panel = document.getElementById('douban-aio-panel');
+    if (panel) panel.remove();
 
-    const existingPanel = document.querySelector('.aio-panel');
-    if (existingPanel) existingPanel.remove();
-
-    const panel = document.createElement('div');
+    panel = document.createElement('div');
+    panel.id = 'douban-aio-panel';
     panel.className = 'aio-panel';
 
     const groups = getSiteGroups(ctx);
@@ -498,7 +496,19 @@
       panel.appendChild(groupEl);
     }
 
-    aside.prepend(panel);
+    const ensureTop = () => {
+      if (aside.firstElementChild !== panel) {
+        aside.prepend(panel);
+      }
+    };
+
+    ensureTop();
+
+    // Maintain top position in sidebar even when other scripts (e.g. 豆瓣评分增强大师) asynchronously prepend modules
+    const observer = new MutationObserver(() => {
+      ensureTop();
+    });
+    observer.observe(aside, { childList: true });
   }
 
   /**
@@ -657,7 +667,17 @@
 
     injectStyles();
     injectSimkl(ctx);
-    renderResourceGroups(ctx);
+
+    const tryRender = () => {
+      const aside = document.querySelector('#content div.aside') || document.querySelector('.aside');
+      if (aside) {
+        renderResourceGroups(ctx, aside);
+      } else {
+        setTimeout(tryRender, 100);
+      }
+    };
+
+    tryRender();
   }
 
   init();
