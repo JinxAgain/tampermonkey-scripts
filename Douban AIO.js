@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.2
+// @version      1.0.3
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
@@ -294,7 +294,7 @@
           },
           {
             name: 'Knaben',
-            url: `https://knaben.eu/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
+            url: `https://knaben.org/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
             check: true,
             selector: 'table.table-striped.table-bordered.table-hover.table-condensed td.td, table tbody tr'
           },
@@ -361,6 +361,39 @@
         ]
       },
       {
+        icon: '🎉🎊🎎🎋🎍🎏🎐🎫🎞️',
+        name: 'Overseas Subtitles',
+        sites: [
+          {
+            name: 'OpenSub',
+            url: ctx.has_imdb
+              ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/imdbid-${ctx.imdb_id}`
+              : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.eng_title || ctx.unititle)}`,
+            check: false
+          },
+          {
+            name: 'Sub-Scene',
+            url: `https://sub-scene.com/search?query=${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            check: false
+          },
+          {
+            name: 'Subsource',
+            url: `https://subsource.net/search?q=${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            check: false
+          },
+          {
+            name: 'Subdl',
+            url: `https://subdl.com/search/${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            check: false
+          },
+          {
+            name: 'Addic7ed',
+            url: `https://www.addic7ed.com/srch.php?search=${enc(ctx.eng_title_clean + (ctx.year ? ctx.year : ''))}`,
+            check: false
+          }
+        ]
+      },
+      {
         icon: '🛹🏎️🛩️🪂✈️🚂🛸🛰️🚀',
         name: 'Cloud Drives',
         sites: [
@@ -377,41 +410,6 @@
           {
             name: '盘友圈',
             url: 'https://panyq.com',
-            check: false
-          }
-        ]
-      },
-      {
-        icon: '🎉🎊🎎🎋🎍🎏🎐🎫🎞️',
-        name: 'Overseas Subtitles',
-        sites: [
-          {
-            name: 'OpenSub',
-            url: ctx.has_imdb
-              ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/imdbid-${ctx.imdb_id}`
-              : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.eng_title || ctx.unititle)}`,
-            check: false
-          },
-          {
-            name: 'Sub-Scene',
-            url: `https://sub-scene.com/subtitles/title?q=${enc(ctx.eng_title_clean || ctx.unititle)}`,
-            check: false
-          },
-          {
-            name: 'Subsource',
-            url: `https://subsource.net/search?query=${enc(ctx.eng_title_clean || ctx.unititle)}`,
-            check: false
-          },
-          {
-            name: 'Subdl',
-            url: ctx.has_imdb
-              ? `https://subdl.com/subtitle/${ctx.imdb_id}`
-              : `https://subdl.com/search/${enc(ctx.eng_title_clean || ctx.unititle)}`,
-            check: false
-          },
-          {
-            name: 'Addic7ed',
-            url: `https://www.addic7ed.com/srch.php?search=${enc(ctx.eng_title_clean + (ctx.year ? ctx.year : ''))}`,
             check: false
           }
         ]
