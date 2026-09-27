@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.4
+// @version      1.0.5
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
@@ -45,6 +45,23 @@
       node = node.nextSibling;
     }
     return node ? node.textContent.trim() : '';
+  }
+
+  /**
+   * Helper to parse season numbers from Chinese text like "第2季", "第四季"
+   */
+  function parseSeasonNumber(text) {
+    if (!text) return null;
+    const numMatch = text.match(/第\s*(\d+)\s*季/);
+    if (numMatch) return parseInt(numMatch[1], 10);
+    const cnMatch = text.match(/第\s*([一二三四五六七八九十]+)\s*季/);
+    if (cnMatch) {
+      const map = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+      const str = cnMatch[1];
+      if (map[str]) return map[str];
+      if (str.startsWith('十')) return 10 + (map[str[1]] || 0);
+    }
+    return null;
   }
 
   /**
@@ -124,7 +141,17 @@
     const unititle = is_chinese ? title : eng_title;
 
     // Season correction for TV series
-    eng_title = eng_title.match(/Season\s\d\d/) ? eng_title.replace(/Season\s/, 'S') : eng_title.replace(/Season\s/, 'S0');
+    if (isSeries && eng_title) {
+      if (eng_title.match(/Season\s\d\d/i)) {
+        eng_title = eng_title.replace(/Season\s/i, 'S');
+      } else if (eng_title.match(/Season\s\d/i)) {
+        eng_title = eng_title.replace(/Season\s/i, 'S0');
+      } else if (!/S\d+/i.test(eng_title)) {
+        const sNum = parseSeasonNumber(reviewedText) || 1;
+        const sStr = sNum < 10 ? `S0${sNum}` : `S${sNum}`;
+        eng_title = `${eng_title} ${sStr}`;
+      }
+    }
     eng_title = eng_title.replace(/[:,!\-]/g, '').replace(/ [^a-z0-9]+$/, '').replace(/ +/g, ' ');
     let eng_title_clean = eng_title.replace(/ S\d\d*$/, '');
     const has_entitle = eng_title_clean;
@@ -257,9 +284,9 @@
    */
   function getSiteGroups(ctx) {
     const enc = encodeURIComponent;
-    const baseTitle = ctx.eng_title_clean || ctx.unititle;
-    const isYearDuplicated = Boolean(ctx.year && ctx.year.trim() && baseTitle.trim().endsWith(ctx.year.trim()));
-    const titleWithYear = isYearDuplicated ? baseTitle : (baseTitle + (ctx.year ? ctx.year : ''));
+    // For series, query is always English Name + Season (e.g. "Breaking Bad S02")
+    // For movie, query is English Name + Year (e.g. "Villain 2010"), preventing duplicate years
+    const query = ctx.ywm;
 
     return [
       {
@@ -268,54 +295,60 @@
         sites: [
           {
             name: 'Ext',
-            url: ctx.has_imdb
+            url: !ctx.isSeries && ctx.has_imdb
               ? `https://ext.to/browse/?sort=size&order=desc&imdb_id=${ctx.imdb_id}`
-              : `https://ext.to/browse/?sort=size&order=desc&q=${enc(ctx.ywm)}`,
+              : `https://ext.to/browse/?sort=size&order=desc&q=${enc(query)}`,
             check: true,
             selector: 'table.table-striped.table-bordered.table-hover.table-condensed td.td, table.table-striped td.td, .table-torrents tr'
           },
           {
             name: 'DMM',
-            url: `https://debridmediamanager.com/${ctx.temp}/${ctx.imdb_id}`,
+            url: ctx.isSeries
+              ? `https://debridmediamanager.com/search?query=${enc(query)}`
+              : (ctx.has_imdb ? `https://debridmediamanager.com/movie/${ctx.imdb_id}` : `https://debridmediamanager.com/search?query=${enc(query)}`),
             check: false
           },
           {
             name: 'TorrentLeech',
-            url: `https://www.tlgetin.cc/torrents/browse/index/imdbID/${ctx.imdb_id}/orderby/size/order/desc`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://www.tlgetin.cc/torrents/browse/index/imdbID/${ctx.imdb_id}/orderby/size/order/desc`
+              : `https://www.tlgetin.cc/torrents/browse/index/query/${enc(query)}/orderby/size/order/desc`,
             check: false
           },
           {
             name: 'Milkie',
-            url: `https://milkie.cc/browse?query=${enc(ctx.ywm)}&categories=1&categories=2`,
+            url: `https://milkie.cc/browse?query=${enc(query)}&categories=1&categories=2`,
             check: true,
             selector: 'table.table2 div.tt-name, table tbody tr'
           },
           {
             name: 'MovieboxPro',
-            url: `https://www.movieboxpro.app/index/search?word=${ctx.imdb_id}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://www.movieboxpro.app/index/search?word=${ctx.imdb_id}`
+              : `https://www.movieboxpro.app/index/search?word=${enc(query)}`,
             check: false
           },
           {
             name: 'Knaben',
-            url: `https://knaben.org/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
+            url: `https://knaben.org/search/${enc(query)}`,
             check: true,
             selector: 'table.table-striped.table-bordered.table-hover.table-condensed td.td, table tbody tr'
           },
           {
             name: '1337X',
-            url: `https://www.1337x.to/search/${enc(ctx.ywm)}/1/`,
+            url: `https://www.1337x.to/search/${enc(query)}/1/`,
             check: true,
             selector: 'table.table-list td.coll-1.name, table tbody tr'
           },
           {
             name: 'Bt4g',
-            url: `https://bt4gprx.com/search?q=${enc(ctx.ywm)}`,
+            url: `https://bt4gprx.com/search?q=${enc(query)}`,
             check: true,
             selector: 'table.table2 div.tt-name, h5.title, div.row h5'
           },
           {
             name: 'Nyaa',
-            url: `https://nyaa.si/?q=${enc(ctx.eng_title || ctx.unititle)}`,
+            url: `https://nyaa.si/?q=${enc(query || ctx.unititle)}`,
             check: true,
             selector: 'div.table-responsive tr.default, table.torrent-list tbody tr'
           },
@@ -327,13 +360,15 @@
           },
           {
             name: 'EZTV',
-            url: `https://eztv.ag/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
+            url: `https://eztv.ag/search/${enc(query)}`,
             check: true,
-            selector: `td.forum_thread_post > a[title*='${ctx.ywm.replace(/S\d+$/g, '')}'], td.forum_thread_post > a`
+            selector: `td.forum_thread_post > a[title*='${query}'], td.forum_thread_post > a`
           },
           {
             name: 'PianYuan',
-            url: `http://pianyuan.org/search?q=${enc(ctx.dbzw)}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `http://pianyuan.org/search?q=${enc(ctx.imdb_id)}`
+              : `http://pianyuan.org/search?q=${enc(query || ctx.unititle)}`,
             check: true,
             selector: 'div.row ul.detail, div.media'
           }
@@ -345,19 +380,25 @@
         sites: [
           {
             name: '字幕库',
-            url: `https://zmk.pw/search?q=${ctx.imdb_id || enc(ctx.unititle)}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://zmk.pw/search?q=${ctx.imdb_id}`
+              : `https://zmk.pw/search?q=${enc(query || ctx.unititle)}`,
             check: true,
             selector: 'h3 a, div.item'
           },
           {
             name: 'Sub HD',
-            url: `https://subhd.tv/search/${enc(ctx.series_exact)}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://subhd.tv/search/${ctx.imdb_id}`
+              : `https://subhd.tv/search/${enc(query || ctx.unititle)}`,
             check: true,
             selector: '.position-relative .float-start, a.d-block'
           },
           {
             name: 'r3sub',
-            url: `https://r3sub.com/search.php?s=${enc(ctx.dbzw)}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://r3sub.com/search.php?s=${enc(ctx.imdb_id)}`
+              : `https://r3sub.com/search.php?s=${enc(query || ctx.unititle)}`,
             check: true,
             selector: 'div.col-sm-8.col-md-9.col-lg-8 div.movie.movie--preview.ddd, div.movie.movie--preview'
           }
@@ -369,29 +410,31 @@
         sites: [
           {
             name: 'OpenSub',
-            url: ctx.has_imdb
+            url: !ctx.isSeries && ctx.has_imdb
               ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/imdbid-${ctx.imdb_id}`
-              : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.eng_title || ctx.unititle)}`,
+              : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(query)}`,
             check: false
           },
           {
             name: 'Sub-Scene',
-            url: `https://sub-scene.com/search?query=${enc(titleWithYear)}`,
+            url: !ctx.isSeries && ctx.has_imdb
+              ? `https://sub-scene.com/search?query=${ctx.imdb_id}`
+              : `https://sub-scene.com/search?query=${enc(query)}`,
             check: false
           },
           {
             name: 'Subsource',
-            url: `https://subsource.net/search?q=${enc(titleWithYear)}`,
+            url: `https://subsource.net/search?q=${enc(query)}`,
             check: false
           },
           {
             name: 'Subdl',
-            url: `https://subdl.com/search/${enc(titleWithYear)}`,
+            url: `https://subdl.com/search/${enc(query)}`,
             check: false
           },
           {
             name: 'Addic7ed',
-            url: `https://www.addic7ed.com/srch.php?search=${enc(titleWithYear)}`,
+            url: `https://www.addic7ed.com/srch.php?search=${enc(query)}`,
             check: false
           }
         ]
