@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.3
+// @version      1.0.4
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
@@ -257,6 +257,9 @@
    */
   function getSiteGroups(ctx) {
     const enc = encodeURIComponent;
+    const baseTitle = ctx.eng_title_clean || ctx.unititle;
+    const isYearDuplicated = Boolean(ctx.year && ctx.year.trim() && baseTitle.trim().endsWith(ctx.year.trim()));
+    const titleWithYear = isYearDuplicated ? baseTitle : (baseTitle + (ctx.year ? ctx.year : ''));
 
     return [
       {
@@ -373,22 +376,22 @@
           },
           {
             name: 'Sub-Scene',
-            url: `https://sub-scene.com/search?query=${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            url: `https://sub-scene.com/search?query=${enc(titleWithYear)}`,
             check: false
           },
           {
             name: 'Subsource',
-            url: `https://subsource.net/search?q=${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            url: `https://subsource.net/search?q=${enc(titleWithYear)}`,
             check: false
           },
           {
             name: 'Subdl',
-            url: `https://subdl.com/search/${enc(ctx.eng_title_clean || ctx.unititle)}`,
+            url: `https://subdl.com/search/${enc(titleWithYear)}`,
             check: false
           },
           {
             name: 'Addic7ed',
-            url: `https://www.addic7ed.com/srch.php?search=${enc(ctx.eng_title_clean + (ctx.year ? ctx.year : ''))}`,
+            url: `https://www.addic7ed.com/srch.php?search=${enc(titleWithYear)}`,
             check: false
           }
         ]
