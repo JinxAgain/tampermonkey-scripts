@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.5
+// @version      1.0.6
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
@@ -303,9 +303,9 @@
           },
           {
             name: 'DMM',
-            url: ctx.isSeries
-              ? `https://debridmediamanager.com/search?query=${enc(query)}`
-              : (ctx.has_imdb ? `https://debridmediamanager.com/movie/${ctx.imdb_id}` : `https://debridmediamanager.com/search?query=${enc(query)}`),
+            url: ctx.has_imdb
+              ? `https://debridmediamanager.com/${ctx.temp}/${ctx.imdb_id}`
+              : `https://debridmediamanager.com/search?query=${enc(query)}`,
             check: false
           },
           {
