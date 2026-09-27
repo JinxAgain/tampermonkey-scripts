@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.1
+// @version      1.0.2
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
@@ -205,7 +205,7 @@
           }
 
           // 2. If OMDb provides an authentic English/international title (e.g. "Villain" for 《恶人》)
-          if (json.Title && /([a-zA-Z]){2,}/.test(json.Title)) {
+          if (json.Title && /([a-zA-Z]){2,}/.test(json.Title) && json.Type !== 'episode') {
             // For movies, or TV series when eng_title is missing/different
             if (ctx.isMovie || !ctx.eng_title) {
               ctx.eng_title = json.Title.replace(/[:,!\-]/g, '').replace(/ [^a-z0-9]+$/, '').replace(/ +/g, ' ');
