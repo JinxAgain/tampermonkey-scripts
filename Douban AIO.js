@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         Douban AIO (Refactored)
 // @namespace    https://github.com/JinxAgain
-// @version      1.0.0
+// @version      1.0.1
 // @description  Streamlined resource search and subtitle aggregator for Douban Movies & TV Series with Dark Reader support.
 // @author       Jinx
 // @match        https://movie.douban.com/subject/*
 // @icon         https://img3.doubanio.com/favicon.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // @connect      *
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/JinxAgain/tampermonkey-scripts/main/Douban%20AIO.js
@@ -17,154 +20,240 @@
 (function () {
   'use strict';
 
-  // Chinese numeral mapping for season extraction
-  const CN_NUM_MAP = {
-    '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
-    '十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15
-  };
+  // Menu command to customize OMDb API key
+  if (typeof GM_registerMenuCommand !== 'undefined') {
+    GM_registerMenuCommand('设置 OMDb API Key', () => {
+      const current = GM_getValue('apikey_omdb', 'thewdb');
+      const val = prompt('请输入 OMDb API Key (默认为公共 Key: thewdb):', current);
+      if (val !== null && val.trim() !== '') {
+        GM_setValue('apikey_omdb', val.trim());
+        location.reload();
+      }
+    });
+  }
 
   /**
-   * Extract comprehensive metadata from current Douban subject page
+   * Helper to retrieve plain text following an element
+   */
+  function fetchAnchorText(el) {
+    if (!el || !el.nextSibling) return '';
+    let node = el.nextSibling;
+    while (node && node.nodeType !== Node.TEXT_NODE) {
+      if (node.nodeType === Node.ELEMENT_NODE && node.textContent.trim()) {
+        return node.textContent.trim();
+      }
+      node = node.nextSibling;
+    }
+    return node ? node.textContent.trim() : '';
+  }
+
+  /**
+   * Extract comprehensive metadata and compute all legacy search variables (commit 94341a7)
    */
   function extractMetadata() {
     const doubanMatch = location.pathname.match(/\/subject\/(\d+)/);
     const doubanId = doubanMatch ? doubanMatch[1] : '';
     if (!doubanId) return null;
 
-    // Detect if this is a TV series or a movie
-    const isSeriesTag = document.querySelector('a.bn-sharing[data-type="电视剧"]');
-    const hasEpisodes = Array.from(document.querySelectorAll('#info span.pl')).some(
-      el => el.textContent.includes('集数') || el.textContent.includes('单集片长')
+    // Detect media types
+    const isSeries = Boolean(
+      document.querySelector('a.bn-sharing[data-type="电视剧"]') ||
+      Array.from(document.querySelectorAll('#info span.pl')).some(
+        el => el.textContent.includes('集数') || el.textContent.includes('单集片长')
+      )
     );
-    const isSeries = Boolean(isSeriesTag || hasEpisodes);
+    const isMovie = !isSeries;
 
-    // Extract IMDb ID from #info section
-    let imdbId = '';
+    // Extract IMDb ID from #info
+    let imdb_id = '';
     const infoSpans = document.querySelectorAll('#info span.pl');
     for (const span of infoSpans) {
       if (span.textContent.includes('IMDb')) {
         let node = span.nextSibling;
         while (node) {
-          if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
-            const match = node.textContent.trim().match(/tt\d+/i);
-            if (match) {
-              imdbId = match[0];
-              break;
-            }
-          } else if (node.nodeType === Node.ELEMENT_NODE) {
-            const match = node.textContent.trim().match(/tt\d+/i);
-            if (match) {
-              imdbId = match[0];
-              break;
-            }
+          const text = (node.textContent || '').trim();
+          const match = text.match(/tt\d+/i);
+          if (match) {
+            imdb_id = match[0];
+            break;
           }
           node = node.nextSibling;
         }
         break;
       }
     }
+    const has_imdb = Boolean(imdb_id);
 
-    // Extract raw title and year
+    // Extract titles and akas exactly as in legacy script
+    const chinese_title = document.title.replace('(豆瓣)', '').trim();
     const h1El = document.querySelector('#content > h1');
-    const titleSpan = h1El ? h1El.querySelector('span[property="v:itemreviewed"]') || h1El.firstElementChild : null;
-    const rawFullTitle = titleSpan ? titleSpan.textContent.trim() : document.title.replace('(豆瓣)', '').trim();
+    const reviewedSpan = h1El ? h1El.querySelector('span[property="v:itemreviewed"]') || h1El.firstElementChild : null;
+    const reviewedText = reviewedSpan ? reviewedSpan.textContent.trim() : chinese_title;
+    const foreign_title = reviewedText.replace(chinese_title, '').trim();
+
+    // Extract aka ("又名")
+    let aka = '';
+    const akaSpan = Array.from(infoSpans).find(el => el.textContent.includes('又名'));
+    if (akaSpan) {
+      const rawAka = fetchAnchorText(akaSpan);
+      if (rawAka) {
+        aka = rawAka.split(' / ').sort((a, b) => a.localeCompare(b)).join('/');
+      }
+    }
+
+    let trans_title, this_title;
+    if (foreign_title) {
+      trans_title = chinese_title + (aka ? ('/' + aka) : '');
+      this_title = foreign_title;
+    } else {
+      trans_title = aka ? aka : '';
+      this_title = chinese_title;
+    }
 
     const yearSpan = h1El ? h1El.querySelector('span.year') : null;
     const yearMatch = yearSpan ? yearSpan.textContent.match(/\d{4}/) : null;
-    const year = yearMatch ? yearMatch[0] : '';
+    const year = yearMatch ? (' ' + yearMatch[0]) : '';
 
-    // Extract season information for TV series
-    let seasonNum = 1;
-    let seasonMatched = false;
+    // Legacy title: first word before space
+    const title = reviewedText.split(' ').shift().replace(/[，]/g, ' ').replace(/：.*$/, '');
 
-    // Try Chinese season regex e.g. "第二季", "第2季"
-    const cnSeasonMatch = rawFullTitle.match(/第([0-9]+|[一二三四五六七八九十]+)季/);
-    if (cnSeasonMatch) {
-      const val = cnSeasonMatch[1];
-      seasonNum = CN_NUM_MAP[val] || parseInt(val, 10) || 1;
-      seasonMatched = true;
-    } else {
-      // Try English season regex e.g. "Season 2", "Season 02"
-      const enSeasonMatch = rawFullTitle.match(/Season\s*(\d+)/i);
-      if (enSeasonMatch) {
-        seasonNum = parseInt(enSeasonMatch[1], 10) || 1;
-        seasonMatched = true;
-      }
+    // Legacy eng_title: first item containing at least two consecutive English letters
+    let eng_title = [this_title, trans_title].join('/').split('/').filter(arr => /([a-zA-Z]){2,}/.test(arr))[0] || '';
+
+    const is_chinese = Boolean(title.match(/[^\x00-\xff]/));
+    const unititle = is_chinese ? title : eng_title;
+
+    // Season correction for TV series
+    eng_title = eng_title.match(/Season\s\d\d/) ? eng_title.replace(/Season\s/, 'S') : eng_title.replace(/Season\s/, 'S0');
+    eng_title = eng_title.replace(/[:,!\-]/g, '').replace(/ [^a-z0-9]+$/, '').replace(/ +/g, ' ');
+    let eng_title_clean = eng_title.replace(/ S\d\d*$/, '');
+    const has_entitle = eng_title_clean;
+
+    const nian = isMovie ? year : '';
+    // Prevent duplicate year suffix if eng_title already ends with the year
+    const isYearDuplicated = Boolean(year.trim() && eng_title.trim().endsWith(year.trim()));
+    let ywm = eng_title ? (isYearDuplicated ? eng_title : (eng_title + nian)) : (unititle + nian);
+    let zwm = chinese_title + nian;
+    let entitle = eng_title_clean ? (isYearDuplicated ? eng_title_clean : (eng_title_clean + nian)) : (unititle + nian);
+    let dbzw = has_imdb ? imdb_id : (unititle + nian);
+    let series_exact = has_imdb ? imdb_id : (isSeries ? (eng_title || unititle) : (unititle + nian));
+    if (isSeries) {
+      series_exact = eng_title || unititle;
     }
 
-    const seasonCode = `S${String(seasonNum).padStart(2, '0')}`;
-    const seasonText = `Season ${seasonNum}`;
-
-    // Separate Chinese and English portions of the title
-    let cnTitle = '';
-    let engTitle = '';
-
-    // Remove year and season markers to isolate base titles
-    const cleanRaw = rawFullTitle
-      .replace(/第[0-9一二三四五六七八九十]+季/g, '')
-      .replace(/Season\s*\d+/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-    const parts = cleanRaw.split(/\s+(?=[A-Za-z0-9])/);
-    if (parts.length > 1) {
-      cnTitle = parts[0].trim();
-      engTitle = parts.slice(1).join(' ').trim();
-    } else {
-      if (/[\u4e00-\u9fa5]/.test(cleanRaw)) {
-        cnTitle = cleanRaw;
-      } else {
-        engTitle = cleanRaw;
-      }
-    }
-
-    if (!cnTitle && engTitle) cnTitle = engTitle;
-    if (!engTitle && cnTitle) engTitle = cnTitle;
-
-    const cleanCnTitle = cnTitle.replace(/[:：]/g, ' ').trim();
-    const cleanEngTitle = engTitle.replace(/[:：]/g, ' ').replace(/[^a-zA-Z0-9\s.-]/g, '').trim();
+    const temp = isMovie ? 'movie' : 'show';
 
     return {
       doubanId,
-      imdbId,
-      rawFullTitle,
-      year,
+      has_imdb,
+      imdb_id,
+      isMovie,
       isSeries,
-      seasonNum,
-      seasonMatched,
-      seasonCode,
-      seasonText,
-      cleanCnTitle,
-      cleanEngTitle
+      chinese_title,
+      foreign_title,
+      aka,
+      trans_title,
+      this_title,
+      year,
+      nian,
+      title,
+      eng_title,
+      eng_title_clean,
+      has_entitle,
+      unititle,
+      ywm,
+      zwm,
+      entitle,
+      dbzw,
+      series_exact,
+      temp
     };
+  }
+
+  /**
+   * Fetch OMDb API to fix episode IMDb IDs and retrieve canonical English title
+   */
+  async function resolveOmdbData(ctx) {
+    if (!ctx.has_imdb) return;
+
+    const apikey = GM_getValue('apikey_omdb', 'thewdb');
+    const url = `https://www.omdbapi.com/?apikey=${apikey}&i=${ctx.imdb_id}`;
+
+    try {
+      const res = await new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          timeout: 4000,
+          onload: resolve,
+          onerror: reject,
+          ontimeout: reject
+        });
+      });
+
+      if (res.status >= 200 && res.status < 400) {
+        const json = JSON.parse(res.responseText);
+        if (json && json.Response === 'True') {
+          // 1. If Douban gave an episode ID, override with the series ID
+          if (json.Type === 'episode' && json.seriesID) {
+            console.log('[Douban AIO] OMDb: Override episode ID', ctx.imdb_id, 'with seriesID:', json.seriesID);
+            ctx.imdb_id = json.seriesID;
+            ctx.dbzw = ctx.imdb_id;
+            if (!ctx.isSeries) {
+              ctx.series_exact = ctx.imdb_id;
+            }
+          }
+
+          // 2. If OMDb provides an authentic English/international title (e.g. "Villain" for 《恶人》)
+          if (json.Title && /([a-zA-Z]){2,}/.test(json.Title)) {
+            // For movies, or TV series when eng_title is missing/different
+            if (ctx.isMovie || !ctx.eng_title) {
+              ctx.eng_title = json.Title.replace(/[:,!\-]/g, '').replace(/ [^a-z0-9]+$/, '').replace(/ +/g, ' ');
+              ctx.eng_title_clean = ctx.eng_title.replace(/ S\d\d*$/, '');
+              const isYearDuplicated = Boolean(ctx.year.trim() && ctx.eng_title.trim().endsWith(ctx.year.trim()));
+              ctx.ywm = isYearDuplicated ? ctx.eng_title : (ctx.eng_title + ctx.nian);
+              ctx.entitle = isYearDuplicated ? ctx.eng_title_clean : (ctx.eng_title_clean + ctx.nian);
+              if (ctx.isSeries) {
+                ctx.series_exact = ctx.eng_title;
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Douban AIO] OMDb resolution skipped or timed out', e);
+    }
   }
 
   /**
    * Inject Simkl favicon link right next to the title in H1
    */
   function injectSimkl(ctx) {
-    if (!ctx.imdbId) return;
+    if (!ctx.has_imdb) return;
     const h1El = document.querySelector('#content > h1');
-    if (!h1El || h1El.querySelector('.aio-simkl-btn')) return;
+    if (!h1El) return;
 
-    const simklLink = document.createElement('a');
-    simklLink.className = 'aio-simkl-btn';
-    simklLink.href = `https://api.simkl.com/redirect?to=Simkl&imdb=${ctx.imdbId}`;
-    simklLink.target = '_blank';
-    simklLink.rel = 'noopener noreferrer';
-    simklLink.title = 'View on Simkl';
+    let simklLink = h1El.querySelector('.aio-simkl-btn');
+    if (!simklLink) {
+      simklLink = document.createElement('a');
+      simklLink.className = 'aio-simkl-btn';
+      simklLink.target = '_blank';
+      simklLink.rel = 'noopener noreferrer';
+      simklLink.title = 'View on Simkl';
 
-    const simklImg = document.createElement('img');
-    simklImg.src = 'https://simkl.com/favicon.ico';
-    simklImg.alt = 'Simkl';
+      const simklImg = document.createElement('img');
+      simklImg.src = 'https://simkl.com/favicon.ico';
+      simklImg.alt = 'Simkl';
+      simklLink.appendChild(simklImg);
 
-    simklLink.appendChild(simklImg);
-    h1El.appendChild(simklLink);
+      h1El.appendChild(simklLink);
+    }
+
+    simklLink.href = `https://api.simkl.com/redirect?to=Simkl&imdb=${ctx.imdb_id}`;
   }
 
   /**
-   * Declarative definition of all 4 resource groups
+   * Declarative definition of all 4 resource groups (commit 94341a7 search logic)
    */
   function getSiteGroups(ctx) {
     const enc = encodeURIComponent;
@@ -176,86 +265,72 @@
         sites: [
           {
             name: 'Ext',
-            url: ctx.isSeries
-              ? `https://ext.to/browse/?sort=size&order=desc&q=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : (ctx.imdbId ? `https://ext.to/browse/?sort=size&order=desc&imdb_id=${ctx.imdbId}` : `https://ext.to/browse/?sort=size&order=desc&q=${enc(ctx.cleanEngTitle)}`),
+            url: ctx.has_imdb
+              ? `https://ext.to/browse/?sort=size&order=desc&imdb_id=${ctx.imdb_id}`
+              : `https://ext.to/browse/?sort=size&order=desc&q=${enc(ctx.ywm)}`,
             check: true,
-            selector: 'table.table-striped td.td, .table-torrents tr'
+            selector: 'table.table-striped.table-bordered.table-hover.table-condensed td.td, table.table-striped td.td, .table-torrents tr'
           },
           {
             name: 'DMM',
-            url: `https://debridmediamanager.com/${ctx.isSeries ? 'show' : 'movie'}/${ctx.imdbId || enc(ctx.cleanEngTitle)}`,
+            url: `https://debridmediamanager.com/${ctx.temp}/${ctx.imdb_id}`,
             check: false
           },
           {
             name: 'TorrentLeech',
-            url: ctx.isSeries
-              ? `https://www.tlgetin.cc/torrents/browse/index/query/${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}/orderby/size/order/desc`
-              : (ctx.imdbId ? `https://www.tlgetin.cc/torrents/browse/index/imdbID/${ctx.imdbId}/orderby/size/order/desc` : `https://www.tlgetin.cc/torrents/browse/index/query/${enc(ctx.cleanEngTitle)}`),
+            url: `https://www.tlgetin.cc/torrents/browse/index/imdbID/${ctx.imdb_id}/orderby/size/order/desc`,
             check: false
           },
           {
             name: 'Milkie',
-            url: ctx.isSeries
-              ? `https://milkie.cc/browse?query=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}&categories=1&categories=2`
-              : `https://milkie.cc/browse?query=${enc(ctx.cleanEngTitle + (ctx.year ? ' ' + ctx.year : ''))}&categories=1&categories=2`,
+            url: `https://milkie.cc/browse?query=${enc(ctx.ywm)}&categories=1&categories=2`,
             check: true,
             selector: 'table.table2 div.tt-name, table tbody tr'
           },
           {
             name: 'MovieboxPro',
-            url: ctx.isSeries
-              ? `https://www.movieboxpro.app/index/search?word=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : `https://www.movieboxpro.app/index/search?word=${ctx.imdbId || enc(ctx.cleanEngTitle)}`,
+            url: `https://www.movieboxpro.app/index/search?word=${ctx.imdb_id}`,
             check: false
           },
           {
             name: 'Knaben',
-            url: ctx.isSeries
-              ? `https://knaben.eu/search/${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : `https://knaben.eu/search/${enc(ctx.cleanEngTitle + (ctx.year ? ' ' + ctx.year : ''))}`,
+            url: `https://knaben.eu/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
             check: true,
-            selector: 'table.table.table-striped td.td, table tbody tr'
+            selector: 'table.table-striped.table-bordered.table-hover.table-condensed td.td, table tbody tr'
           },
           {
             name: '1337X',
-            url: ctx.isSeries
-              ? `https://www.1337x.to/search/${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}/1/`
-              : `https://www.1337x.to/search/${enc(ctx.cleanEngTitle + (ctx.year ? ' ' + ctx.year : ''))}/1/`,
+            url: `https://www.1337x.to/search/${enc(ctx.ywm)}/1/`,
             check: true,
             selector: 'table.table-list td.coll-1.name, table tbody tr'
           },
           {
             name: 'Bt4g',
-            url: ctx.isSeries
-              ? `https://bt4gprx.com/search?q=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : `https://bt4gprx.com/search?q=${enc(ctx.cleanEngTitle + (ctx.year ? ' ' + ctx.year : ''))}`,
+            url: `https://bt4gprx.com/search?q=${enc(ctx.ywm)}`,
             check: true,
             selector: 'table.table2 div.tt-name, h5.title, div.row h5'
           },
           {
             name: 'Nyaa',
-            url: `https://nyaa.si/?q=${enc(ctx.cleanEngTitle || ctx.cleanCnTitle)}`,
+            url: `https://nyaa.si/?q=${enc(ctx.eng_title || ctx.unititle)}`,
             check: true,
             selector: 'div.table-responsive tr.default, table.torrent-list tbody tr'
           },
           {
             name: '动漫花园',
-            url: `https://share.dmhy.org/topics/list?keyword=${enc(ctx.cleanCnTitle || ctx.cleanEngTitle)}`,
+            url: `https://share.dmhy.org/topics/list?keyword=${enc(ctx.unititle)}`,
             check: true,
             selector: 'tbody span.btl_1, table#topic_list tbody tr'
           },
           {
             name: 'EZTV',
-            url: `https://eztv.ag/search/${enc(ctx.cleanEngTitle)}`,
+            url: `https://eztv.ag/search/${enc(ctx.ywm.replace(/S\d+$/g, ''))}`,
             check: true,
-            selector: 'td.forum_thread_post > a'
+            selector: `td.forum_thread_post > a[title*='${ctx.ywm.replace(/S\d+$/g, '')}'], td.forum_thread_post > a`
           },
           {
             name: 'PianYuan',
-            url: ctx.isSeries
-              ? `http://pianyuan.org/search?q=${enc(ctx.cleanCnTitle + ' 第' + ctx.seasonNum + '季')}`
-              : `http://pianyuan.org/search?q=${enc(ctx.cleanCnTitle + (ctx.year ? ' ' + ctx.year : ''))}`,
+            url: `http://pianyuan.org/search?q=${enc(ctx.dbzw)}`,
             check: true,
             selector: 'div.row ul.detail, div.media'
           }
@@ -267,27 +342,21 @@
         sites: [
           {
             name: '字幕库',
-            url: ctx.isSeries
-              ? `https://zmk.pw/search?q=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : (ctx.imdbId ? `https://zmk.pw/search?q=${ctx.imdbId}` : `https://zmk.pw/search?q=${enc(ctx.cleanCnTitle)}`),
+            url: `https://zmk.pw/search?q=${ctx.imdb_id || enc(ctx.unititle)}`,
             check: true,
             selector: 'h3 a, div.item'
           },
           {
             name: 'Sub HD',
-            url: ctx.isSeries
-              ? `https://subhd.tv/search/${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : (ctx.imdbId ? `https://subhd.tv/search/${ctx.imdbId}` : `https://subhd.tv/search/${enc(ctx.cleanCnTitle)}`),
+            url: `https://subhd.tv/search/${enc(ctx.series_exact)}`,
             check: true,
             selector: '.position-relative .float-start, a.d-block'
           },
           {
             name: 'r3sub',
-            url: ctx.isSeries
-              ? `https://r3sub.com/search.php?s=${enc(ctx.cleanCnTitle + ' ' + ctx.seasonCode)}`
-              : `https://r3sub.com/search.php?s=${enc(ctx.cleanCnTitle + (ctx.year ? ' ' + ctx.year : ''))}`,
+            url: `https://r3sub.com/search.php?s=${enc(ctx.dbzw)}`,
             check: true,
-            selector: 'div.movie.movie--preview'
+            selector: 'div.col-sm-8.col-md-9.col-lg-8 div.movie.movie--preview.ddd, div.movie.movie--preview'
           }
         ]
       },
@@ -297,16 +366,12 @@
         sites: [
           {
             name: 'T-REX',
-            url: ctx.isSeries
-              ? `https://t-rex.tzfile.com/?s=${enc(ctx.cleanCnTitle + ' 第' + ctx.seasonNum + '季')}`
-              : `https://t-rex.tzfile.com/?s=${enc(ctx.cleanCnTitle)}`,
+            url: `https://t-rex.tzfile.com/?s=${enc(ctx.unititle)}`,
             check: false
           },
           {
             name: '秒搜',
-            url: ctx.isSeries
-              ? `https://miaosou.fun/info?searchKey=${enc(ctx.cleanCnTitle + ' 第' + ctx.seasonNum + '季')}`
-              : `https://miaosou.fun/info?searchKey=${enc(ctx.cleanCnTitle)}`,
+            url: `https://miaosou.fun/info?searchKey=${enc(ctx.unititle)}`,
             check: false
           },
           {
@@ -322,35 +387,31 @@
         sites: [
           {
             name: 'OpenSub',
-            url: ctx.isSeries
-              ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : (ctx.imdbId ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/imdbid-${ctx.imdbId}` : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.cleanEngTitle)}`),
+            url: ctx.has_imdb
+              ? `https://www.opensubtitles.org/zh/search/sublanguageid-all/imdbid-${ctx.imdb_id}`
+              : `https://www.opensubtitles.org/zh/search/sublanguageid-all/moviename-${enc(ctx.eng_title || ctx.unititle)}`,
             check: false
           },
           {
             name: 'Sub-Scene',
-            url: ctx.isSeries
-              ? `https://sub-scene.com/subtitles/title?q=${enc(ctx.cleanEngTitle + ' - ' + ctx.seasonText)}`
-              : `https://sub-scene.com/subtitles/title?q=${enc(ctx.cleanEngTitle || ctx.cleanCnTitle)}`,
+            url: `https://sub-scene.com/subtitles/title?q=${enc(ctx.eng_title_clean || ctx.unititle)}`,
             check: false
           },
           {
             name: 'Subsource',
-            url: ctx.isSeries
-              ? `https://subsource.net/search?query=${enc(ctx.cleanEngTitle + ' ' + ctx.seasonCode)}`
-              : `https://subsource.net/search?query=${enc(ctx.cleanEngTitle || ctx.cleanCnTitle)}`,
+            url: `https://subsource.net/search?query=${enc(ctx.eng_title_clean || ctx.unititle)}`,
             check: false
           },
           {
             name: 'Subdl',
-            url: ctx.isSeries
-              ? `https://subdl.com/search/${enc(ctx.cleanEngTitle + ' ' + ctx.seasonText)}`
-              : (ctx.imdbId ? `https://subdl.com/subtitle/${ctx.imdbId}` : `https://subdl.com/search/${enc(ctx.cleanEngTitle || ctx.cleanCnTitle)}`),
+            url: ctx.has_imdb
+              ? `https://subdl.com/subtitle/${ctx.imdb_id}`
+              : `https://subdl.com/search/${enc(ctx.eng_title_clean || ctx.unititle)}`,
             check: false
           },
           {
             name: 'Addic7ed',
-            url: `https://www.addic7ed.com/srch.php?search=${enc(ctx.cleanEngTitle || ctx.cleanCnTitle)}`,
+            url: `https://www.addic7ed.com/srch.php?search=${enc(ctx.eng_title_clean + (ctx.year ? ctx.year : ''))}`,
             check: false
           }
         ]
@@ -393,7 +454,6 @@
    * Perform asynchronous existence check using GM_xmlhttpRequest
    */
   function checkSiteResource(site, btnEl, doubanId) {
-    // Check local cache first
     const cache = getCache(doubanId);
     if (typeof cache[site.name] === 'boolean') {
       applyStatus(btnEl, cache[site.name] ? 'exist' : 'not-exist');
@@ -663,11 +723,15 @@
   /**
    * Main Initialization
    */
-  function init() {
+  async function init() {
     const ctx = extractMetadata();
     if (!ctx) return;
 
     injectStyles();
+
+    // Query OMDb to correct series episode IMDb IDs & retrieve official international Title
+    await resolveOmdbData(ctx);
+
     injectSimkl(ctx);
 
     const tryRender = () => {
